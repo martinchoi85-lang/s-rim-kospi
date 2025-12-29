@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "s-rim-analysis"
+version = "0.1.0"
+description = "KOSPI S-RIM analysis (learning project)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  # 실제 의존성 관리는 requirements.txt로 해도 되지만,
+  # 최소 런타임 의존성은 여기에 적어두면 재현성이 좋아집니다.
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.27",
+  "SQLAlchemy>=2.0",
+  "psycopg2-binary>=2.9",
+  "pydantic-settings>=2.0",
+  "pandas>=2.0",
+  "pykrx>=1.0.40",
+  "OpenDartReader>=0.2.3",
+  "python-dotenv>=1.0",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["app*"]
