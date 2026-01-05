@@ -98,3 +98,4 @@ def list_market(
         }
         for r in rows
     ]
+
