@@ -7,6 +7,7 @@ from datetime import date
 from ..models import Ticker, Snapshot, MarketSnapshot, FundamentalSnapshot, DiscountRateSnapshot, SRimResult
 
 
+
 def upsert_snapshot(db: Session, snapshot_id: str, as_of: date, note: str | None = None):
     obj = db.get(Snapshot, snapshot_id)
     if obj is None:
