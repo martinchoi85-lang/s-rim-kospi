@@ -340,7 +340,7 @@ def _to_num(x) -> Optional[float]:
 def pick_issued_shares(df: pd.DataFrame) -> tuple[Optional[float], Optional[float], Optional[float]]:
     """
     df(list)에서 발행주식수(istc_totqy), 자기주식수(tesstk_co), 유통주식수(distb_stock_co) 추출.
-    케이스에 따라 여러 행이 있을 수 있는데, 보통 '보통주' 행을 우선으로 잡고 없으면 첫 행.
+    케이스에 따라 여러 행이 있을 수 있는데, 보통 '보통compute_srim주' 행을 우선으로 잡고 없으면 첫 행.
     """
     if df is None or len(df) == 0:
         return None, None, None
