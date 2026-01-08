@@ -9,6 +9,83 @@ import streamlit as st
 st.set_page_config(page_title="S-RIM (KOSPI) Viewer", layout="wide")
 st.title("S-RIM 기반 코스피 가격평가 (리서치/학습 모드)")
 
+
+def clip(x, lo, hi):
+    try:
+        v = float(x)
+    except Exception:
+        return None
+    return max(lo, min(hi, v))
+
+def to_0_1(v, lo, hi):
+    """[lo, hi] -> [0,1]로 선형 스케일"""
+    if v is None:
+        return None
+    if hi == lo:
+        return 0.0
+    return (v - lo) / (hi - lo)
+
+def compute_composite_score(it, weights, prefer_ok_only=True):
+    """
+    it: /srim/{snapshot} row (roe_derived, pbr_derived, gap_pct, flags 포함)
+    weights: dict
+    반환: (score, components_dict) 또는 (None, 이유)
+    """
+    flags = it.get("flags") or {}
+    if isinstance(flags, str):
+        try:
+            flags = json.loads(flags)
+        except Exception:
+            flags = {}
+
+    q, _ = classify_quality(flags)
+
+    # 기본 정책: 추천 점수는 OK만 대상으로(운영 단순)
+    if prefer_ok_only and q != "OK":
+        return (None, {"reason": f"quality={q}"})
+
+    gap = clip(it.get("gap_pct"), 0.0, 200.0)
+    gap_score = to_0_1(gap, 0.0, 200.0) if gap is not None else None
+
+    roe = clip(it.get("roe_derived"), -0.10, 0.30)
+    roe_score = to_0_1(roe, -0.10, 0.30) if roe is not None else None
+
+    pbr = clip(it.get("pbr_derived"), 0.0, 5.0)
+    pbr_score = (1.0 - to_0_1(pbr, 0.0, 5.0)) if pbr is not None else None
+
+    # 구성요소 중 None이 있으면 해당 항목은 점수에서 제외(가중치 재분배)
+    comps = {
+        "gap_score": gap_score,
+        "roe_score": roe_score,
+        "pbr_score": pbr_score,
+        "quality": q,
+    }
+
+    usable = {k: v for k, v in comps.items() if k.endswith("_score") and v is not None}
+    if not usable:
+        return (None, {"reason": "no usable components"})
+
+    # 가중치 재정규화(사용 가능한 항목만)
+    w = {
+        "gap_score": weights["gap"],
+        "roe_score": weights["roe"],
+        "pbr_score": weights["pbr"],
+    }
+    w_used = {k: w[k] for k in usable.keys()}
+    s = sum(w_used.values())
+    if s <= 0:
+        return (None, {"reason": "invalid weights"})
+    w_used = {k: v / s for k, v in w_used.items()}
+
+    score = 0.0
+    for k, v in usable.items():
+        score += w_used[k] * v
+
+    comps["score"] = score
+    comps["weights_used"] = w_used
+    return (score, comps)
+
+
 # -----------------------------
 # API_BASE 설정(Secrets 없어도 동작)
 # -----------------------------
@@ -194,19 +271,28 @@ flag_options = [x.get("key") for x in flags_resp.get("items", []) if isinstance(
 with st.expander("S-RIM 공식/해석 가이드(학습용)", expanded=False):
     st.markdown(
         """
-**핵심 개념**
-- BPS = 지배주주지분 / 발행주식수  
-- ROE = 지배주주순이익 / 지배주주지분  
-- 요구수익률 r = discount_rate_snapshot.rate (스냅샷마다 확정)
+        **핵심 개념**
+        - BPS = 지배주주지분 / 발행주식수  
+        - ROE = 지배주주순이익 / 지배주주지분  
+        - 요구수익률 r = discount_rate_snapshot.rate (스냅샷마다 확정)
 
-**잔여이익(Residual Income)**
-- RI = (ROE - r) × BPS
+        **잔여이익(Residual Income)**
+        - RI = (ROE - r) × BPS
 
-**가치(개념)**
-- fair_price = BPS + 미래 RI의 현재가치(PV)
+        **가치(개념)**
+        - fair_price = BPS + 미래 RI의 현재가치(PV)
 
-**flags는 ‘정답’이 아니라 ‘주의 신호’**
-- 모델 한계/데이터 품질/정책(clamp 등)을 명시적으로 드러내는 장치
+        **flags는 ‘정답’이 아니라 ‘주의 신호’**
+        - 모델 한계/데이터 품질/정책(clamp 등)을 명시적으로 드러내는 장치
+
+        📌 **Composite Score는 절대적인 투자 점수가 아닙니다.**
+
+        - 동일한 ROE 정의 하에서
+        - 괴리율이 크고
+        - 수익성이 상대적으로 양호하며
+        - 밸류 리스크(PBR)가 낮은 종목을
+
+        **우선적으로 살펴보기 위한 정렬 도구**입니다.
         """
     )
 
@@ -319,7 +405,7 @@ def render_full_table():
             "시장가": fmt_int(it.get("market_price")),
             "이론가(S-RIM)": fmt_int(it.get("fair_price")),
             "괴리율(%)": fmt_pct2(it.get("gap_pct")),
-            "ROE(파생)": fmt_float2(it.get("roe_derived")),     # ✅ 추가
+            "ROE(단순/추정)": fmt_float2(it.get("roe_derived")), # ✅ 추가
             "PBR(파생)": fmt_float2(it.get("pbr_derived")),     # ✅ 추가
             "시총": fmt_int(it.get("market_cap")),              # ✅ 추가
             "품질": quality_label(it.get("_quality")),
@@ -369,6 +455,18 @@ def render_full_table():
     # -----------------------------
     st.divider()
     st.subheader("종목 상세(원천값 → 파생값 → 결과)")
+    with st.expander("ROE 산출 방식(중요)", expanded=True):
+        st.markdown(
+            """
+            **현재 ROE 정의**
+            - ROE = 지배주주순이익 / 지배주주지분
+            - 연율화(TTM) 적용 ❌
+            - 평균자본 적용 ❌
+
+            📌 본 앱의 S-RIM은  
+            **ROE 절대값 정확도보다, 동일 기준 하의 괴리율 비교**에 초점을 둡니다.
+            """
+        )   
 
     detail = api_get(f"/srim/{snapshot_choice}/ticker/{selected_ticker}")
 
@@ -528,12 +626,56 @@ def render_screen():
     st.divider()
     st.markdown(
         """
-**해석 팁**
-- **OK**: 비교적 해석이 깔끔한 편(모델 한계는 항상 존재)
-- **WARN**: 계산은 되었으나 해석 주의(ROE<r, 음수 ROE, 음수 초과이익 클램프 등)
-- **EXCLUDE**: 핵심 입력 누락 등으로 신뢰 낮음(기본 제외 권장)
+        **해석 팁**
+        - **OK**: 비교적 해석이 깔끔한 편(모델 한계는 항상 존재)
+        - **WARN**: 계산은 되었으나 해석 주의(ROE<r, 음수 ROE, 음수 초과이익 클램프 등)
+        - **EXCLUDE**: 핵심 입력 누락 등으로 신뢰 낮음(기본 제외 권장)
         """
     )
+    st.divider()
+    st.subheader("추천 점수화(Composite Score)")
+
+    w_gap = st.sidebar.slider("가중치: gap_pct", 0.0, 1.0, 0.6, 0.05)
+    w_roe = st.sidebar.slider("가중치: ROE(파생)", 0.0, 1.0, 0.3, 0.05)
+    w_pbr = st.sidebar.slider("가중치: PBR(파생)", 0.0, 1.0, 0.1, 0.05)
+
+    prefer_ok_only = st.sidebar.checkbox("점수화는 OK만 대상으로", value=True)
+    top_n = st.sidebar.slider("Top N", 10, 200, 50, 10)
+
+    weights = {"gap": w_gap, "roe": w_roe, "pbr": w_pbr}
+
+    # 추천 계산은 /srim/{snapshot}에서 많이 가져와야 함 (limit 크게)
+    base = api_get(
+        f"/srim/{snapshot_choice}",
+        params={"only_calc_ready": "true", "limit": 2000, "offset": 0, "sort": "gap_desc"},
+    )
+    items0 = base.get("items", [])
+
+    scored = []
+    for it in items0:
+        score, comps = compute_composite_score(it, weights, prefer_ok_only=prefer_ok_only)
+        if score is None:
+            continue
+        scored.append((score, it, comps))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    scored = scored[:top_n]
+
+    rows = []
+    for score, it, comps in scored:
+        rows.append({
+            "티커": it.get("ticker"),
+            "종목명": it.get("name"),
+            "Composite Score": round(score, 4),
+            "괴리율(%)": fmt_pct2(it.get("gap_pct")),
+            "ROE(단순/추정)": fmt_float2(it.get("roe_derived")),
+            "PBR(파생)": fmt_float2(it.get("pbr_derived")),
+            "시총": fmt_int(it.get("market_cap")),
+            "설명(요약)": summarize_flags_korean(it.get("flags") or {}, max_items=2),
+        })
+
+    st.dataframe(rows, use_container_width=True, height=520)
+    st.caption("주의: Composite Score는 학습/스크리닝용 지표이며, 투자 의사결정의 단독 근거로 사용하면 안 됩니다.")
 
 
 # -----------------------------

@@ -180,6 +180,12 @@ def run_stage3_srim(
         if safe_float_or_none(y.bps) is None or safe_float_or_none(y.roe) is None:
             flags["FLAG_SUSPICIOUS_NUMERIC"] = True  # SW 관점: UI에서 경고/필터링에 사용
 
+        flags.update({
+            "roe_method": "NI_PARENT / EQUITY_PARENT",
+            "roe_is_annualized": False,
+            "equity_is_average": False,
+        })
+
         out_rows.append(
             {
                 "snapshot_id": snapshot_id,
